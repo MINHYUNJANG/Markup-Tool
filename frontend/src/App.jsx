@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import './App.css'
 
-const API_BASE = 'http://localhost:3000'
-const DEV_MOCK = false
+const API_BASE = import.meta.env.VITE_API_URL
+const DEV_MOCK = true
 
 const MOCK_CRAWL = {
   success: true,
