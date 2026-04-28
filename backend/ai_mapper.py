@@ -58,9 +58,10 @@ def _cerebras_chat(messages: list, max_tokens: int = 8192) -> str:
 
 
 def _chat(messages: list, max_tokens: int = 8192) -> str:
-    """Groq API를 사용하여 메시지를 처리합니다."""
+    """Groq 우선, 쿼터·사이즈 초과 시 Cerebras로 자동 폴백."""
     client = _get_client()
     last_error = None
+    groq_exhausted = False
 
     for model in _MODELS:
         for msgs in [messages, _truncate_messages(messages, _MAX_CHARS)]:
@@ -78,6 +79,12 @@ def _chat(messages: list, max_tokens: int = 8192) -> str:
                 if e.status_code == 400 and "decommissioned" in str(e):
                     break  # 폐기된 모델, 다음 모델로
                 raise
+
+    # Groq 전체 소진 → Cerebras 시도
+    if last_error and hasattr(last_error, 'status_code') and last_error.status_code in (429, 413):
+        if os.getenv("CEREBRAS_API_KEY"):
+            return _cerebras_chat(messages, max_tokens)
+        raise RuntimeError("오늘 사용할 수 있는 AI 토큰이 모두 소진되었습니다.")
 
     raise RuntimeError(f"모든 모델에서 실패했습니다. 잠시 후 다시 시도해주세요.\n({last_error})")
 
@@ -114,9 +121,9 @@ _SYSTEM_AUTO = """당신은 HTML 마크업 전문가입니다.
 7. 테이블:
    - 원본 테이블 HTML이 제공된 경우 그 구조(thead/tbody/th/td/colspan/rowspan 등)를 그대로 유지
    - 반드시 아래 래퍼로 감싸기:
-   <div class="tbl_st scroll_gr" tabindex="0">
+   <div class="tbl_st scroll_gr">
      <table>
-       <caption>테이블 제목</caption>
+       <caption>테이블 상위 타이틀과 주요 th 항목을 조합해 "OOO 테이블 입니다."형식으로 작성</caption>
        <colgroup><col><col>...</colgroup>
        <thead>...</thead>
        <tbody>...</tbody>
@@ -286,7 +293,7 @@ def _post_process_markup(html: str) -> str:
             # 기존 colgroup 제거 후 새로 삽입
             for cg in table.find_all("colgroup"):
                 cg.decompose()
-            width = round(100 / max_cols, 2)
+            width = round(100 / max_cols)
             colgroup = soup.new_tag("colgroup")
             for _ in range(max_cols):
                 col = soup.new_tag("col")
@@ -318,45 +325,84 @@ def _tab_indent(html: str) -> str:
               "dfn", "em", "i", "kbd", "mark", "q", "rp", "rt", "ruby",
               "s", "samp", "small", "span", "strong", "sub", "sup", "time",
               "u", "var", "wbr"}
+    # 내부 콘텐츠가 인라인/텍스트만이면 한 줄로 출력할 블록 태그
+    COLLAPSE = {"th", "td", "caption", "li", "p", "h2", "h3", "h4", "dt", "dd"}
 
-    tokens = re.findall(r'(<!--.*?-->|<[^>]+>|[^<]+)', html, re.DOTALL)
+    tokens = [t for t in re.findall(r'(<!--.*?-->|<[^>]+>|[^<]+)', html, re.DOTALL) if t.strip()]
     lines = []
     depth = 0
+    i = 0
 
-    for token in tokens:
-        stripped = token.strip()
-        if not stripped:
-            continue
+    while i < len(tokens):
+        stripped = tokens[i].strip()
 
         # 닫는 태그
         if re.match(r'^</', stripped):
             depth = max(0, depth - 1)
             lines.append("\t" * depth + stripped)
+            i += 1
             continue
 
         # 주석
         if stripped.startswith("<!--"):
             lines.append("\t" * depth + stripped)
+            i += 1
             continue
 
         # 여는 태그
         tag_match = re.match(r'^<(\w+)', stripped)
         if tag_match:
             tag_name = tag_match.group(1).lower()
+
             if tag_name in VOID or stripped.endswith("/>"):
                 lines.append("\t" * depth + stripped)
-            elif tag_name in INLINE:
-                # 인라인 태그는 이전 줄에 붙이거나 그대로
-                lines.append("\t" * depth + stripped)
-                depth += 1
-            else:
-                lines.append("\t" * depth + stripped)
-                depth += 1
+                i += 1
+                continue
+
+            # 한 줄 처리 대상: 내부에 블록 자식이 없는지 lookahead
+            if tag_name in COLLAPSE:
+                j = i + 1
+                nested = 0
+                content_parts = []
+                has_block_child = False
+                found_close = False
+                while j < len(tokens):
+                    t = tokens[j].strip()
+                    close_m = re.match(r'^</(\w+)', t)
+                    open_m = re.match(r'^<(\w+)', t)
+                    if close_m:
+                        cn = close_m.group(1).lower()
+                        if nested == 0 and cn == tag_name:
+                            found_close = True
+                            break
+                        nested -= 1
+                        content_parts.append(t)
+                    elif open_m:
+                        cn = open_m.group(1).lower()
+                        if cn not in INLINE and cn not in VOID:
+                            has_block_child = True
+                        if cn not in VOID and not t.endswith("/>"):
+                            nested += 1
+                        content_parts.append(t)
+                    else:
+                        content_parts.append(t)
+                    j += 1
+
+                if found_close and not has_block_child:
+                    close_tag = tokens[j].strip()
+                    lines.append("\t" * depth + stripped + "".join(content_parts) + close_tag)
+                    i = j + 1
+                    continue
+
+            lines.append("\t" * depth + stripped)
+            depth += 1
+            i += 1
             continue
 
         # 텍스트 노드
         text = stripped
         if text:
             lines.append("\t" * depth + text)
+        i += 1
 
     return "\n".join(lines)
