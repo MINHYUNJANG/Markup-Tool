@@ -1,0 +1,113 @@
+from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+import asyncio
+import base64
+import httpx
+import os
+from groq import Groq
+
+_client = None
+_SUPPORTED_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    return _client
+
+
+def _mime_from_content_type(content_type: str) -> str:
+    ct = content_type.split(";")[0].strip().lower()
+    if ct in _SUPPORTED_MIME:
+        return ct
+    if "png" in ct:
+        return "image/png"
+    if "gif" in ct:
+        return "image/gif"
+    if "webp" in ct:
+        return "image/webp"
+    return "image/jpeg"
+
+
+async def _ocr_image(image_url: str) -> str:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as http:
+            response = await http.get(image_url)
+            if response.status_code != 200:
+                return ""
+            media_type = _mime_from_content_type(
+                response.headers.get("content-type", "image/jpeg")
+            )
+            image_data = base64.standard_b64encode(response.content).decode("utf-8")
+    except Exception:
+        return ""
+
+    try:
+        result = _get_client().chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{image_data}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": "이 이미지에 텍스트가 있으면 모두 추출해주세요. 텍스트만 반환하고 설명은 생략하세요. 텍스트가 없으면 빈 문자열을 반환하세요.",
+                    },
+                ],
+            }],
+        )
+        text = result.choices[0].message.content.strip()
+        if text in ("빈 문자열", "텍스트가 없습니다", "없음", ""):
+            return ""
+        return text
+    except Exception:
+        return ""
+
+
+async def crawl(url: str, selector: str) -> dict:
+    """
+    url: 크롤링할 페이지 URL
+    selector: CSS 셀렉터 (예: "#main", ".content", "div.article")
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.goto(url, wait_until="networkidle")
+
+        html = await page.content()
+        await browser.close()
+
+    soup = BeautifulSoup(html, "html.parser")
+    element = soup.select_one(selector)
+
+    if not element:
+        return {"success": False, "error": f"셀렉터 '{selector}'에 해당하는 요소를 찾을 수 없습니다."}
+
+    img_tags = element.find_all("img")
+    img_jobs = []
+    for img in img_tags:
+        src = img.get("src") or img.get("data-src") or ""
+        if not src or src.startswith("data:"):
+            continue
+        abs_url = urljoin(url, src)
+        img_jobs.append((abs_url, img.get("alt", "")))
+
+    ocr_results = await asyncio.gather(*[_ocr_image(u) for u, _ in img_jobs])
+
+    images = [
+        {"src": u, "alt": alt, "ocr_text": text}
+        for (u, alt), text in zip(img_jobs, ocr_results)
+        if text
+    ]
+
+    return {
+        "success": True,
+        "html": str(element),
+        "text": element.get_text(separator="\n", strip=True),
+        "images": images,
+    }
