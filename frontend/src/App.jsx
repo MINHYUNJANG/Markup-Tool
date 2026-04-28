@@ -2,7 +2,7 @@ import { useState } from 'react'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_URL
-const DEV_MOCK = true
+const DEV_MOCK = false
 
 const MOCK_CRAWL = {
   success: true,
