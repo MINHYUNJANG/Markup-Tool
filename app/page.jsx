@@ -2,26 +2,6 @@
 
 import { useState } from 'react'
 
-const DEV_MOCK = false
-
-const MOCK_CRAWL = {
-  success: true,
-  text: '개인정보 처리방침\n\n제1조 (개인정보의 처리 목적)\n회사는 다음의 목적을 위하여 개인정보를 처리합니다.\n\n① 서비스 제공\n② 회원 관리\n③ 마케팅 활용\n\n제2조 (개인정보의 처리 및 보유 기간)\n이용자의 개인정보는 수집·이용 목적이 달성된 후에는 해당 정보를 지체 없이 파기합니다.',
-  html: '<h1>개인정보 처리방침</h1><h2>제1조 (개인정보의 처리 목적)</h2><p>회사는 다음의 목적을 위하여 개인정보를 처리합니다.</p><ol><li>서비스 제공</li><li>회원 관리</li><li>마케팅 활용</li></ol><h2>제2조 (개인정보의 처리 및 보유 기간)</h2><p>이용자의 개인정보는 수집·이용 목적이 달성된 후에는 해당 정보를 지체 없이 파기합니다.</p>',
-  images: [],
-}
-
-const MOCK_MARKUP = `<h2 class="tit1">개인정보 처리방침</h2>
-<h3 class="tit2">제1조 (개인정보의 처리 목적)</h3>
-<div class="indent">
-\t<p>회사는 다음의 목적을 위하여 개인정보를 처리합니다.</p>
-\t<ol class="list_ol1">
-\t\t<li><span class="num">1</span>서비스 제공</li>
-\t\t<li><span class="num">2</span>회원 관리</li>
-\t\t<li><span class="num">3</span>마케팅 활용</li>
-\t</ol>
-</div>`
-
 const isValidUrl = (str) => {
   try {
     const u = new URL(str)
@@ -32,10 +12,6 @@ const isValidUrl = (str) => {
 }
 
 async function apiAutoMarkup(url, selector) {
-  if (DEV_MOCK) {
-    await new Promise(r => setTimeout(r, 800))
-    return { html: MOCK_MARKUP, crawled: MOCK_CRAWL }
-  }
   const res = await fetch('/api/auto-markup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -47,10 +23,6 @@ async function apiAutoMarkup(url, selector) {
 }
 
 async function apiEditMarkup(html, instruction) {
-  if (DEV_MOCK) {
-    await new Promise(r => setTimeout(r, 700))
-    return html + `\n<!-- [mock] 적용됨: ${instruction} -->`
-  }
   const res = await fetch('/api/edit-markup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -187,14 +159,6 @@ export default function App() {
     setNeedsSelector(false)
     setResult(null)
     setMarkupResult(null)
-
-    if (DEV_MOCK) {
-      await new Promise(r => setTimeout(r, 600))
-      setResult(MOCK_CRAWL)
-      setActiveTab('text')
-      setLoading(false)
-      return
-    }
 
     try {
       const res = await fetch('/api/crawl', {
